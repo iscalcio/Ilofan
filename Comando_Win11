@@ -1,0 +1,112 @@
+# Abra o PowerShell como Administrador e cole tudo de uma vez
+# Open PowerShell as Administrator and paste everything at once.
+
+$script = @'
+<#
+ilofan.ps1 – Full fan control for HP DL380 Gen8 on Windows 11
+ilofan.ps1 – Controle total dos fans do DL380 Gen8 no Windows 11
+
+Usage / Uso:
+  ilofan 15                → set fans to 15% right now / define fans em 15% agora
+  ilofan 22:30 10          → schedule 10% every day at 22:30 / agenda 10% todo dia às 22:30
+  ilofan auto              → return to iLO automatic mode / volta pro modo automático do iLO
+#>
+
+param(
+    [string]$arg1,
+    [string]$arg2
+)
+
+# =================================== CONFIGURATION ===================================
+$LXC_IP   = "192.168.15.202"   # ← CHANGE IF YOUR LXC HAS A DIFFERENT IP / MUDE SE FOR DIFERENTE
+$PORTA    = "8000"
+# ====================================================================================
+
+# Function to apply speed now / Função para aplicar velocidade agora
+function Apply-Now {
+    param([int]$speed)
+    Invoke-RestMethod -Uri "http://$LXC_IP`:$PORTA/index.php" -Method Post -ContentType "application/json" -Body "{`"action`":`"fans`",`"fans`":$speed}" | Out-Null
+    Write-Host "Fans set to $speed% now / Fans definidos em $speed% agora" -ForegroundColor Green
+}
+
+# Function to return to auto / Função para voltar ao automático
+function Apply-Auto {
+    Invoke-RestMethod -Uri "http://$LXC_IP`:$PORTA/index.php" -Method Post -ContentType "application/json" -Body "{`"action`":`"auto`"}" | Out-Null
+    Write-Host "Fans returned to iLO AUTOMATIC mode / Fans voltaram ao modo AUTOMÁTICO do iLO" -ForegroundColor Green
+}
+
+# Only one argument → apply now / Apenas um argumento → aplica agora
+if ($arg1 -and -not $arg2) {
+    if ($arg1 -eq "auto") { Apply-Auto; exit }
+    if ($arg1 -match '^\d+$' -and [int]$arg1 -ge 10 -and [int]$arg1 -le 100) {
+        Apply-Now $arg1
+    } else {
+        Write-Host "Speed must be 10–100 or 'auto' / Velocidade deve ser 10–100 ou 'auto'" -ForegroundColor Red
+    }
+    exit
+}
+
+# Two arguments → schedule / Dois argumentos → agendar
+if ($arg1 -and $arg2) {
+    if (-not ($arg1 -match '^\d{2}:\d{2}$')) {
+        Write-Host "Time format must be HH:MM / Formato de hora deve ser HH:MM" -ForegroundColor Red; exit
+    }
+    if (-not ($arg2 -match '^\d+$') -or [int]$arg2 -lt 10 -or [int]$arg2 -gt 100) {
+        Write-Host "Speed must be 10–100 / Velocidade deve ser 10–100" -ForegroundColor Red; exit
+    }
+
+    $hora   = $arg1.Split(":")[0]
+    $minuto = $arg1.Split(":")[1]
+    $tarefa = "ilofan_$arg1"
+
+    # Remove old task with same time / Remove tarefa antiga com mesmo horário
+    schtasks /Delete /TN $tarefa /F 2>$null
+
+    # Create new scheduled task / Cria nova tarefa agendada
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"& ilofan $arg2`""
+    $trigger = New-ScheduledTaskTrigger -Daily -At "$arg1"
+    Register-ScheduledTask -TaskName $tarefa -Action $action -Trigger $trigger -Description "Fans $arg2% every day at $arg1" -RunLevel Highest -Force | Out-Null
+
+    Write-Host "Scheduled: every day at $arg1 → fans $arg2% / Agendado: todo dia às $arg1 → fans $arg2%" -ForegroundColor Green
+    exit
+}
+
+# Help / Ajuda
+Write-Host @"
+Usage / Uso:
+  ilofan 15                → set now / define agora
+  ilofan 22:30 10          → schedule every day / agenda todo dia
+  ilofan auto              → iLO automatic / automático do iLO
+"@
+'@
+
+# Salva o script
+$scriptPath = "$env:ProgramFiles\WindowsPowerShell\Scripts\ilofan.ps1"
+[IO.File]::WriteAllText($scriptPath, $script)
+
+# Cria pasta no PATH se não existir
+$scriptsFolder = "$env:ProgramFiles\WindowsPowerShell\Scripts"
+if (-not (Test-Path $scriptsFolder)) { New-Item -Path $scriptsFolder -ItemType Directory -Force | Out-Null }
+
+# Adiciona no PATH do usuário (pra sempre)
+$envPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+if ($envPath -notlike "*$scriptsFolder*") {
+    [Environment]::SetEnvironmentVariable("PATH", "$envPath;$scriptsFolder", "User")
+    $env:PATH += ";$scriptsFolder"
+}
+
+# Cria atalho simples (ilofan.cmd) pra chamar o PowerShell
+$cmd = "@powershell -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" %*" 
+[IO.File]::WriteAllText("$scriptsFolder\ilofan.cmd", $cmd)
+
+Write-Host ""
+Write-Host "✓ ilofan instalado com sucesso no Windows 11!" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Exemplos agora (abra um NOVO terminal):" -ForegroundColor Yellow
+Write-Host "  ilofan 10"
+Write-Host "  ilofan 22:00 10"
+Write-Host "  ilofan 08:00 25"
+Write-Host "  ilofan auto"
+Write-Host ""
+Write-Host "Já deixando em 12% como cortesia... " -NoNewline
+& "$scriptPath" 12
